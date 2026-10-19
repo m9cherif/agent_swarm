@@ -1,0 +1,21 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "providers": {
+    "vireonix": {
+      "name": "Vireonix",
+      "package": "@opencode/ai/providers/openai-compatible",
+      "settings": {
+        "baseURL": "https://vireonix.ai/v1"
+      },
+      "models": {
+        "auto": {
+          "name": "Vireonix Auto",
+          "limit": {
+            "context": 1000000,
+            "output": 200000
+          }
+        }
+      }
+    }
+  }
+}
