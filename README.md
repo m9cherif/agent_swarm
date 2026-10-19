@@ -1,1 +1,3 @@
 # agent_swarm
+**the prompt to opencode:**
+use this nvidia api key: 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 to make a full agent swarm that there is a lot of agents work (300+) : every 5 has a single role they do it, one after one, then pass to the next 5 agents role... and there is 15 other AIs that create prompts to every ai and when they complete the prompts creating they vote for them and send the best prompts. and all the participated ais discuss and less detailled description of his work all the ais can see it. and all of them work on the sandbox of that daytona api key: dtn_ba8b7dbca04c40586743d5c60dd26c52f1262df022fa58601f76031b99ab203d (the sandbox is agent_swarm) and they have full access to it
