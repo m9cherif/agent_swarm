@@ -1,0 +1,211 @@
+{
+  "settings": {
+    "goal": "Build a small but genuinely working command-line task manager in Python with a clean architecture: task model, storage, core logic, a CLI, tests and documentation.",
+    "squads": 1,
+    "agents_per_squad": 5,
+    "total_agents": 5,
+    "curators": 5,
+    "live_llm": true,
+    "use_sandbox": true,
+    "run_dir": "/root/swarm/workspace/smoke-20261019-173415"
+  },
+  "metrics": {
+    "elapsed_sec": 207.5,
+    "squads_completed": 1,
+    "agents_scored": 5,
+    "avg_reputation": 4.7,
+    "phase_counts": {
+      "curator_author": 1,
+      "curator_vote": 1,
+      "peer_review": 1
+    },
+    "llm": {
+      "calls": 25,
+      "failures": 0,
+      "retries": 3,
+      "tokens_in": 20062,
+      "tokens_out": 14855,
+      "total_tokens": 34917,
+      "avg_latency": 16.68,
+      "dead_models": [],
+      "model_calls": {
+        "nvidia/nemotron-3-super-120b-a12b": 28
+      },
+      "model_ok": {
+        "nvidia/nemotron-3-super-120b-a12b": 25
+      }
+    }
+  },
+  "squads": [
+    {
+      "squad": 0,
+      "role": "product-architect",
+      "duration": 198.6,
+      "agents": 5,
+      "avg_score": 4.7
+    }
+  ],
+  "leaderboard": [
+    {
+      "agent": "S00-agent-4",
+      "reputation": 8.5,
+      "avg": 8.5,
+      "reviews": 1
+    },
+    {
+      "agent": "S00-agent-1",
+      "reputation": 7.0,
+      "avg": 7.0,
+      "reviews": 1
+    },
+    {
+      "agent": "S00-agent-5",
+      "reputation": 6.0,
+      "avg": 6.0,
+      "reviews": 1
+    },
+    {
+      "agent": "S00-agent-2",
+      "reputation": 2.0,
+      "avg": 2.0,
+      "reviews": 1
+    },
+    {
+      "agent": "S00-agent-3",
+      "reputation": 0.0,
+      "avg": 0.0,
+      "reviews": 1
+    }
+  ],
+  "artifacts": [
+    "_relative_path_"
+  ],
+  "board": [
+    {
+      "seq": 1,
+      "squad": -1,
+      "role": "system",
+      "author": "orchestrator",
+      "kind": "system",
+      "text": "Swarm started: 5 agents, 1 sequential squads, 5 curators."
+    },
+    {
+      "seq": 2,
+      "squad": 0,
+      "role": "product-architect",
+      "author": "council",
+      "kind": "curator",
+      "text": "Curator council dispatched prompt from curator-02 (avg 7.00/10)."
+    },
+    {
+      "seq": 3,
+      "squad": 0,
+      "role": "product-architect",
+      "author": "S00-agent-4",
+      "kind": "digest",
+      "text": "{ \"summary\": \"Produced the ARCHITECTURE.md file defining a clean‑architecture task manager with modules, interfaces, boundaries, and data flow.\", \"detail\": \"Created a comprehensive markdown document t"
+    },
+    {
+      "seq": 4,
+      "squad": 0,
+      "role": "product-architect",
+      "author": "S00-agent-5",
+      "kind": "digest",
+      "text": "{ \"summary\": \"Created ARCHITECTURE.md outlining modules, responsibilities, interfaces, and layered architecture for the task manager.\", \"detail\": \"Authored a comprehensive markdown file that satisfies"
+    },
+    {
+      "seq": 5,
+      "squad": 0,
+      "role": "product-architect",
+      "author": "S00-agent-2",
+      "kind": "digest",
+      "text": "We need to produce JSON with summary, detail, files, commands. Our role: product-architect, worker 2 = core logic. We need to produce ARCHITECTURE.md file content. Since we are worker 2 focusing on co"
+    },
+    {
+      "seq": 6,
+      "squad": 0,
+      "role": "product-architect",
+      "author": "S00-agent-1",
+      "kind": "digest",
+      "text": "{ \"summary\": \"Created ARCHITECTURE.md defining modules, boundaries, data flow, and interfaces for a clean-architecture Python task manager.\", \"detail\": \"Produced a comprehensive architecture document"
+    },
+    {
+      "seq": 7,
+      "squad": 0,
+      "role": "product-architect",
+      "author": "S00-agent-3",
+      "kind": "digest",
+      "text": "<one short sentence, visible to all other agents>"
+    },
+    {
+      "seq": 8,
+      "squad": 0,
+      "role": "product-architect",
+      "author": "orchestrator",
+      "kind": "discussion",
+      "text": "Squad 1 (product-architect) completed: avg score 4.7/10, 1 artefact(s). { \"summary\": \"Created ARCHITECTURE.md defining modules, boundaries, data flow, and interfaces for a clean-architecture P"
+    }
+  ],
+  "reports": [
+    {
+      "squad": 0,
+      "role": "product-architect",
+      "duration": 198.55,
+      "winner": "curator-02",
+      "winner_score": 7.0,
+      "avg_score": 4.7,
+      "artifacts": [
+        "_relative_path_"
+      ],
+      "works": [
+        {
+          "agent": "S00-agent-1",
+          "score": 7.0,
+          "summary": "{ \"summary\": \"Created ARCHITECTURE.md defining modules, boundaries, data flow, and interfaces for a clean-architecture Python task manager.\", \"detail\": \"Produced a comprehensive architecture document",
+          "files": [],
+          "model": "nvidia/nemotron-3-super-120b-a12b",
+          "tokens": 2572,
+          "ok": true
+        },
+        {
+          "agent": "S00-agent-2",
+          "score": 2.0,
+          "summary": "We need to produce JSON with summary, detail, files, commands. Our role: product-architect, worker 2 = core logic. We need to produce ARCHITECTURE.md file content. Since we are worker 2 focusing on co",
+          "files": [],
+          "model": "nvidia/nemotron-3-super-120b-a12b",
+          "tokens": 2572,
+          "ok": true
+        },
+        {
+          "agent": "S00-agent-3",
+          "score": 0.0,
+          "summary": "<one short sentence, visible to all other agents>",
+          "files": [
+            "_relative_path_"
+          ],
+          "model": "nvidia/nemotron-3-super-120b-a12b",
+          "tokens": 2572,
+          "ok": true
+        },
+        {
+          "agent": "S00-agent-4",
+          "score": 8.5,
+          "summary": "{ \"summary\": \"Produced the ARCHITECTURE.md file defining a clean‑architecture task manager with modules, interfaces, boundaries, and data flow.\", \"detail\": \"Created a comprehensive markdown document t",
+          "files": [],
+          "model": "nvidia/nemotron-3-super-120b-a12b",
+          "tokens": 2572,
+          "ok": true
+        },
+        {
+          "agent": "S00-agent-5",
+          "score": 6.0,
+          "summary": "{ \"summary\": \"Created ARCHITECTURE.md outlining modules, responsibilities, interfaces, and layered architecture for the task manager.\", \"detail\": \"Authored a comprehensive markdown file that satisfies",
+          "files": [],
+          "model": "nvidia/nemotron-3-super-120b-a12b",
+          "tokens": 2572,
+          "ok": true
+        }
+      ]
+    }
+  ]
+}

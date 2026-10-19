@@ -1,0 +1,31 @@
+==============================================================================
+AGENT SWARM  |  FINAL REPORT
+==============================================================================
+squads completed : 1/1
+agents           : 5 (1 x 5)
+curators         : 5
+elapsed          : 205.5s
+LLM calls        : 25  (failures 0, retries 3)
+tokens           : 34,917 (in 20,062 / out 14,855)
+avg LLM latency  : 16.68s
+discussion posts : 8
+artefacts        : 1
+
+-- SQUADS -----------------------------------------------------------
+  # 1 product-architect     198.6s  agents=5  avg=4.70  no runnable python artefact
+
+-- LEADERBOARD (peer-voted reputation) -----------------------------
+   1. S00-agent-4      rep=8.50    avg=8.50  reviews=1
+   2. S00-agent-1      rep=7.00    avg=7.00  reviews=1
+   3. S00-agent-5      rep=6.00    avg=6.00  reviews=1
+   4. S00-agent-2      rep=2.00    avg=2.00  reviews=1
+   5. S00-agent-3      rep=0.00    avg=0.00  reviews=1
+
+-- ARTEFACTS IN SANDBOX -------------------------------------------
+  /root/swarm/workspace/smoke-20261019-173415/_relative_path_
+
+-- SANDBOX TREE -----------------------------------------------------
+/root/swarm/workspace/smoke-20261019-173415
+/root/swarm/workspace/smoke-20261019-173415/_checkpoint.json
+/root/swarm/workspace/smoke-20261019-173415/_relative_path_
+==============================================================================

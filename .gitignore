@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.env
+
+# one-off API/endpoint discovery probes (not part of the project)
+/nv_*.py
+/dt_*.py
+/probe*.py
+/spec.py
