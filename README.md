@@ -63,6 +63,7 @@ runs cycle the catalogue so later passes refine earlier work.
 | **Token budget guard** | `orchestrator.py` | `--budget N` stops the run cleanly |
 | **Offline mode** | `llm.py` | Deterministic stubs — full pipeline without spending tokens |
 | **Reports** | `cli.py`, `dashboard.py` | Text + JSON + self-contained **HTML dashboard** |
+| **Desktop console** | `gui.py` | `python -m swarm gui` (PyQt6): start/stop/resume a run, live console, squads, leaderboard, board, artefacts, history — the same `Orchestrator`, no second code path |
 
 ---
 
@@ -109,6 +110,9 @@ python -m swarm run --squads 60 --budget 3000000
 # continue an interrupted run (writes out/_checkpoint.json after every squad)
 python -m swarm run --squads 60 --resume-from out/_checkpoint.json
 #   an exported report works too: --resume-from out/swarm-report-<stamp>.json
+
+# desktop console (PyQt6) — same orchestrator, driven from a GUI
+python -m swarm gui          # or double-click start_gui.bat
 ```
 
 Everything a run produces lands in `out/` (git-ignored):
@@ -118,6 +122,41 @@ Everything a run produces lands in `out/` (git-ignored):
 * `swarm-dashboard-*.html` — open in a browser for the visual dashboard
 * `_checkpoint.json` — resume point: board, blackboard, metrics and squad reports
 * `events-*.jsonl` — append-only audit trail of every dispatch/vote/review/verify event
+
+---
+
+## Desktop GUI (PyQt6)
+
+```bash
+python -m swarm gui      # or double-click start_gui.bat
+python -m pip install PyQt6   # the only extra dependency, optional
+```
+
+The console drives the **same** `Orchestrator` as `python -m swarm run` — there
+is no second code path, so a run started in the GUI can be resumed from the CLI
+and vice versa (and the checkpoint lands in the same `out/_checkpoint.json`).
+The orchestrator runs on a worker thread while the UI polls the lock-protected
+state every 400 ms, so the window never blocks.
+
+| Page | What it shows |
+|---|---|
+| **Run** | goal, scale/concurrency/timeout/budget fields, output dir, resume picker, stat cards, progress bar, live colour-coded console |
+| **Squads** | per-squad duration, winning curator, prompt scores, verification verdict, state + a duration chart |
+| **Leaderboard** | peer-voted reputation table with a top-12 chart |
+| **Board** | every discussion post, filterable by kind (digest / discussion / curator / verification / system) |
+| **Artefacts** | files in the run's sandbox workspace, one click to copy the path |
+| **History** | every report in `out/` — double-click opens its HTML dashboard |
+| **Settings** | read-only keys, sandbox and Qt/Python versions, plus buttons to run the test suite and `swarm probe` (output appears in the Run console) |
+
+* **Start / Stop** — Stop asks the orchestrator to finish the current squad and
+  halt; reports and the checkpoint are written either way.
+* **Modes** — the two checkboxes mirror `--offline` / `--no-sandbox`, and the
+  hint line always spells out whether the run is free or spending tokens.
+* **Resume from** — point it at `out/_checkpoint.json` (or an exported report),
+  exactly like `--resume-from`.
+* Charts are painted with `QPainter`, so the GUI adds no plotting dependency.
+  With `QtWebEngineWidgets` absent the HTML dashboard simply opens in your
+  browser.
 
 ---
 
@@ -194,7 +233,8 @@ asked again — the call is retried without it instead of failing.
 swarm/
   __init__.py
   __main__.py        # python -m swarm
-  cli.py             # run / probe / models commands
+  cli.py             # run / probe / models / gui commands
+  gui.py             # PyQt6 desktop console (python -m swarm gui)
   config.py          # keys, endpoints, model pools, roles, scale, settings
   llm.py             # resilient NVIDIA NIM client
   sandbox.py         # Daytona sandbox client (exec + files)
@@ -205,6 +245,10 @@ swarm/
   verify.py          # run agent code in the sandbox, broadcast results
   orchestrator.py    # the pipeline
   dashboard.py       # self-contained HTML dashboard
+start_gui.bat        # launch the desktop console
+run_swarm_300.bat    # launch the full 300-agent run
+test_vote.py         # unit tests for curator scoring / dispatch
+test_verify.py       # unit tests for the verification decision tree
 ```
 
 ---

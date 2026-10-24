@@ -240,6 +240,20 @@ def _write_outputs(orch, out_dir: str, interrupted: bool, t0: float) -> None:
 
 
 # ---------------------------------------------------------------------------
+# gui
+# ---------------------------------------------------------------------------
+def cmd_gui(args) -> int:
+    """Launch the PyQt6 desktop console (same Orchestrator as `run`)."""
+    try:
+        from .gui import main as gui_main
+    except ImportError as e:
+        print("The GUI needs PyQt6:  pip install PyQt6", file=sys.stderr)
+        print(f"(import failed: {e})", file=sys.stderr)
+        return 3
+    return gui_main([])
+
+
+# ---------------------------------------------------------------------------
 # arg parsing
 # ---------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
@@ -299,6 +313,10 @@ def build_parser() -> argparse.ArgumentParser:
     # models
     m = sub.add_parser("models", help="list NVIDIA models on this key")
     m.set_defaults(func=cmd_models)
+
+    # gui
+    g = sub.add_parser("gui", help="launch the PyQt6 desktop console")
+    g.set_defaults(func=cmd_gui)
 
     return p
 

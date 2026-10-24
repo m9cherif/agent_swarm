@@ -1,6 +1,9 @@
 # Agent Swarm - no third-party dependencies required.
 # The entire project uses only the Python standard library (3.8+).
 #
+# Optional: desktop console (`python -m swarm gui`) needs PyQt6 6.x
+# PyQt6>=6.4
+#
 # Optional: if you prefer the official Daytona SDK instead of the built-in
 # REST client in swarm/sandbox.py, uncomment the line below.
 # daytona>=0.20
