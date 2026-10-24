@@ -19,13 +19,14 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import threading
 import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from .config import NVIDIA_API_KEY, NVIDIA_CHAT_URL
 
@@ -99,13 +100,6 @@ def _extract_text(message: Dict) -> str:
     return ""
 
 
-class _OfflineStub:
-    """Deterministic stand-in used when live_llm is disabled."""
-
-    def __init__(self, seed_fn: Optional[Callable[[str], str]] = None):
-        self._seed_fn = seed_fn
-
-
 # ---------------------------------------------------------------------------
 # The client
 # ---------------------------------------------------------------------------
@@ -153,8 +147,9 @@ class LLMClient:
         self._cooldown_until = 0.0
         self._cooldown_lock = threading.Lock()
 
-        # metrics
-        self._stats_lock = threading.Lock()
+        # metrics (RLock: stats_snapshot() reads the token/latency helpers,
+        # which take the same lock)
+        self._stats_lock = threading.RLock()
         self.calls = 0
         self.failures = 0
         self.retries = 0
@@ -168,15 +163,20 @@ class LLMClient:
     # -- metrics helpers ----------------------------------------------------
     @property
     def total_tokens(self) -> int:
-        return self.tokens_in + self.tokens_out
+        with self._stats_lock:
+            return self.tokens_in + self.tokens_out
 
     @property
     def avg_latency(self) -> float:
-        return sum(self.latencies) / len(self.latencies) if self.latencies else 0.0
+        with self._stats_lock:
+            return (
+                sum(self.latencies) / len(self.latencies)
+                if self.latencies else 0.0
+            )
 
     def stats_snapshot(self) -> Dict:
         with self._stats_lock:
-            return {
+            snap = {
                 "calls": self.calls,
                 "failures": self.failures,
                 "retries": self.retries,
@@ -184,10 +184,15 @@ class LLMClient:
                 "tokens_out": self.tokens_out,
                 "total_tokens": self.tokens_in + self.tokens_out,
                 "avg_latency": round(self.avg_latency, 2),
-                "dead_models": sorted(self._dead),
                 "model_calls": dict(self.model_calls),
                 "model_ok": dict(self.model_ok),
             }
+        # `_dead` is mutated under its own lock - sorting it under the stats
+        # lock only is a race (a concurrent _mark_dead() raises
+        # "set changed size during iteration" and would kill the report).
+        with self._dead_lock:
+            snap["dead_models"] = sorted(self._dead)
+        return snap
 
     # -- throttling ---------------------------------------------------------
     def _wait_cooldown(self):
@@ -207,6 +212,23 @@ class LLMClient:
     def _is_dead(self, model: str) -> bool:
         with self._dead_lock:
             return model in self._dead
+
+    def _effort_for(self, model: str) -> Optional[str]:
+        """The `reasoning_effort` to send for this model, or None to omit it.
+
+        A model that rejects the parameter is remembered so we never pay for
+        that failed call twice.
+        """
+        if not self.reasoning_effort or model in self._effort_bad:
+            return None
+        return self.reasoning_effort
+
+    def _reject_effort(self, model: str, err: str) -> None:
+        with self._dead_lock:
+            self._effort_bad.add(model)
+        with self._stats_lock:
+            self.errors.append(f"{model}: reasoning_effort rejected "
+                               f"({(err or '')[:120]})")
 
     # -- core single-model call --------------------------------------------
     def _once(self, model: str, messages: List[Dict], max_tokens: int,
@@ -247,6 +269,17 @@ class LLMClient:
             except Exception:
                 pass
             is_429 = e.code == 429
+            # A 400 complaining about the parameter means this model simply
+            # does not take `reasoning_effort` - that is NOT a dead model.
+            low = detail.lower()
+            is_effort_bad = bool(
+                effort is not None
+                and e.code == 400
+                and ("effort" in low or "unknown parameter" in low
+                     or "unsupported" in low or "not in schema" in low)
+            )
+            if is_effort_bad:
+                return "", {"_effort_bad": True}, False, f"HTTP {e.code}: {detail}"
             is_404 = e.code in (404, 400) and (
                 "Not found for account" in detail or "Function" in detail or e.code == 404
             )
@@ -301,13 +334,23 @@ class LLMClient:
 
         for model in live_chain:
             for attempt in range(self.max_retries + 1):
-                self._wait_cooldown()
-                with self._sem:
-                    t0 = time.time()
-                    text, usage, is_429, err = self._once(
-                        model, messages, max_tokens, temperature, timeout
-                    )
-                    dt = time.time() - t0
+                effort = self._effort_for(model)
+                while True:
+                    self._wait_cooldown()
+                    with self._sem:
+                        t0 = time.time()
+                        text, usage, is_429, err = self._once(
+                            model, messages, max_tokens, temperature, timeout,
+                            effort=effort,
+                        )
+                        dt = time.time() - t0
+                    # the model refused the parameter: remember it and retry
+                    # this very call without it instead of failing the request.
+                    if usage.get("_effort_bad") and effort is not None:
+                        self._reject_effort(model, err)
+                        effort = None
+                        continue
+                    break
 
                 attempts.append(model)
                 with self._stats_lock:
@@ -375,6 +418,57 @@ class LLMClient:
         return self.chat(msgs, **kw).text
 
     # -- offline stub -------------------------------------------------------
+    @staticmethod
+    def _offline_reply(messages: List[Dict]) -> Optional[str]:
+        """Pick the reply shape that matches the REQUEST.
+
+        Offline mode is only useful if it exercises the real parsing paths:
+        a curator must get prose back, a judge must get a scores object, a
+        peer reviewer a score object. Handing every caller the worker stub
+        made offline runs quietly bypass all of that.
+        """
+        user = ""
+        for m in reversed(messages):
+            if m.get("role") == "user":
+                user = str(m.get("content", ""))
+                break
+        text = user.lower()
+
+        # 1) curator vote: {"scores": {"<n>": <0-10>, ...}}
+        if "candidate numbers" in text:
+            m = re.search(r"candidate numbers:\s*([0-9,\s]+)", user)
+            idxs = [int(x) for x in re.findall(r"\d+", m.group(1))] if m else []
+            if not idxs:
+                idxs = list(range(4))
+            # deterministic but varied across candidates
+            scores = {str(i): float((i * 3 + len(user)) % 11) for i in idxs}
+            return json.dumps({"scores": scores})
+
+        # 2) peer review: {"score": <0-10>, "note": "..."}
+        if "output summary" in text or "peer reviewer" in text:
+            score = float(4 + (len(user) % 7))
+            return json.dumps({"score": score, "note": "[offline] peer review"})
+
+        # 3) curator authoring: plain prose, not JSON
+        if "style requirement" in text or "write the prompt for the worker" in text:
+            role = ""
+            deliverable = ""
+            rm = re.search(r"ROLE this squad plays:\s*(.+)", user)
+            if rm:
+                role = rm.group(1).strip()
+            dm = re.search(r"Required deliverable:\s*(.+)", user)
+            if dm:
+                deliverable = dm.group(1).strip()
+            return (
+                f"You are the {role or 'implementer'} for this build. "
+                f"Produce {deliverable or 'the required deliverable'} as real, "
+                "complete content: state the objective, list the exact files to "
+                "write with their paths, and give acceptance criteria that a "
+                "reviewer can check. Keep it consistent with what earlier squads "
+                "built. Do not describe code - write it."
+            )
+        return None
+
     def _offline(self, messages: List[Dict], models: Optional[Sequence[str]]) -> LLMResult:
         user = ""
         for m in reversed(messages):
@@ -382,31 +476,39 @@ class LLMClient:
                 user = str(m.get("content", ""))
                 break
         model = (models or self.default_models or ["offline"])[0]
-        # produce a plausible, deterministic stand-in. Return valid JSON so the
-        # whole downstream path (parse -> files -> sandbox write) is exercised.
-        snippet = " ".join(user.split())[:100] or "task"
-        stub = {
-            "summary": f"[offline] Handled slice of: {snippet[:120]}",
-            "detail": (
-                f"[offline] Deterministic stub. Full request was {len(user)} chars. "
-                "Run with live LLM to spend real tokens and get real code."
-            ),
-            "files": [
-                {
-                    "path": "offline_stub.py",
-                    "content": (
-                        '"""Placeholder produced by an offline swarm agent."""\n'
-                        'SLICE = """' + snippet[:400] + '"""\n\n'
-                        "def describe() -> str:\n"
-                        "    return SLICE.strip()\n\n"
-                        'if __name__ == "__main__":\n'
-                        "    print(describe())\n"
-                    ),
-                },
-                {"path": "OFFLINE.md", "content": f"# Offline stub\n\n{snippet}\n"},
-            ],
-            "commands": ["mkdir -p . && echo offline-agent-ran > .offline_ran"],
-        }
+
+        shaped = self._offline_reply(messages)
+        if shaped is not None:
+            text, is_json = shaped, shaped.lstrip().startswith("{")
+        else:
+            # worker-shaped stand-in: valid JSON so the whole downstream path
+            # (parse -> files -> sandbox write) is exercised.
+            is_json = True
+            snippet = " ".join(user.split())[:100] or "task"
+            stub = {
+                "summary": f"[offline] Handled slice of: {snippet[:120]}",
+                "detail": (
+                    f"[offline] Deterministic stub. Full request was {len(user)} chars. "
+                    "Run with live LLM to spend real tokens and get real code."
+                ),
+                "files": [
+                    {
+                        "path": "offline_stub.py",
+                        "content": (
+                            '"""Placeholder produced by an offline swarm agent."""\n'
+                            'SLICE = """' + snippet[:400] + '"""\n\n'
+                            "def describe() -> str:\n"
+                            "    return SLICE.strip()\n\n"
+                            'if __name__ == "__main__":\n'
+                            "    print(describe())\n"
+                        ),
+                    },
+                    {"path": "OFFLINE.md", "content": f"# Offline stub\n\n{snippet}\n"},
+                ],
+                "commands": ["mkdir -p . && echo offline-agent-ran > .offline_ran"],
+            }
+            text = json.dumps(stub)
+
         with self._stats_lock:
             self.calls += 1
             self.model_calls[model] = self.model_calls.get(model, 0) + 1
@@ -414,7 +516,7 @@ class LLMClient:
             self.latencies.append(0.001)
         return LLMResult(
             ok=True,
-            text=json.dumps(stub),
+            text=text,
             model=f"offline/{model}",
             total_tokens=0,
             latency=0.0,

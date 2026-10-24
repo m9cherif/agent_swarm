@@ -93,27 +93,46 @@ def cmd_models(args) -> int:
 # ---------------------------------------------------------------------------
 # resume helper
 # ---------------------------------------------------------------------------
-def _resume(orch, checkpoint_path: str) -> int:
-    """Load a previous run's checkpoint and return the next squad index.
+def _read_state(path: str):
+    """Read a checkpoint (or exported report) file into a dict."""
+    with open(path, "r", encoding="utf-8") as fh:
+        return json.load(fh)
 
-    Also re-points the orchestrator at the SAME sandbox folder so artefacts
-    accumulate in one place instead of scattering across dated runs.
+
+def _resume(orch, checkpoint_path: str):
+    """Restore a previous run and return the squad index to continue from.
+
+    Returns None when the file cannot be used, so the caller can abort
+    instead of silently restarting from squad 0.
     """
     try:
-        with open(checkpoint_path, "r", encoding="utf-8") as fh:
-            state = json.load(fh)
+        state = _read_state(checkpoint_path)
     except Exception as e:
         _print(f"! could not read checkpoint {checkpoint_path}: {e}")
-        return 0
+        return None
+    if not isinstance(state, dict):
+        _print(f"! {checkpoint_path} is not a swarm checkpoint/report")
+        return None
 
-    completed = int(state.get("completed_squads", 0))
-    run_dir = state.get("run_dir")
-    if run_dir:
-        orch.run_dir = run_dir
-    # keep the blackboard/board counts for reporting continuity
-    _print(f"resuming from checkpoint: {completed} squad(s) already done "
-           f"(run_dir={run_dir})")
-    return max(0, min(completed, orch.scale.squads))
+    shape = "checkpoint" if ("version" in state or
+                              "completed_squads" in state) else "report"
+    try:
+        completed = orch.restore(state)
+    except Exception as e:
+        _print(f"! {checkpoint_path} could not be restored: "
+               f"{type(e).__name__}: {e}")
+        return None
+    if completed == 0 and shape == "report" and not state.get("metrics"):
+        _print(f"! {checkpoint_path} carries no squad progress")
+        return None
+
+    _print(f"resuming from {shape} {checkpoint_path}: "
+           f"{completed}/{orch.scale.squads} squad(s) already done, "
+           f"run_dir={orch.run_dir}")
+    if completed >= orch.scale.squads:
+        _print("! nothing left to do: every squad in this run is already "
+               "complete (raise --squads to continue past it)")
+    return min(completed, orch.scale.squads)
 
 
 # ---------------------------------------------------------------------------
@@ -123,12 +142,20 @@ def cmd_run(args) -> int:
     from .config import Scale, Settings, SETTINGS
     from .orchestrator import Orchestrator
 
+    base = Scale()
     scale = Scale(
-        squads=args.squads,
-        agents_per_squad=args.agents_per_squad,
-        curators=args.curators,
-        concurrency=args.concurrency,
-        llm_timeout=args.llm_timeout,
+        squads=args.squads if args.squads is not None else base.squads,
+        agents_per_squad=(
+            args.agents_per_squad if args.agents_per_squad is not None
+            else base.agents_per_squad
+        ),
+        curators=args.curators if args.curators is not None else base.curators,
+        concurrency=(
+            args.concurrency if args.concurrency is not None else base.concurrency
+        ),
+        llm_timeout=(
+            args.llm_timeout if args.llm_timeout is not None else base.llm_timeout
+        ),
     )
 
     settings = Settings(
@@ -144,53 +171,83 @@ def cmd_run(args) -> int:
         run_prefix=args.run_prefix,
     )
 
-    orch = Orchestrator(settings)
+    out_dir = args.out or os.path.join(os.path.dirname(__file__), "..", "out")
+    out_dir = os.path.abspath(out_dir)
+    orch = Orchestrator(settings, out_dir=out_dir)
 
     # Resume: pick up where a previous run left off (same sandbox folder).
     start_squad = 0
     if args.resume_from:
-        start_squad = _resume(orch, args.resume_from)
+        resumed = _resume(orch, args.resume_from)
+        if resumed is None:
+            return 2
+        start_squad = resumed
 
     t0 = time.time()
+    interrupted = False
     try:
         orch.run(start_squad=start_squad)
     except KeyboardInterrupt:
+        interrupted = True
         _print("\n! interrupted -> writing partial report")
         orch.stop()
+    finally:
+        # Reports are written even if the run blew up: losing the artefact
+        # because of an exception would waste the whole run.
+        _write_outputs(orch, out_dir, interrupted, t0)
+    return 130 if interrupted else 0
 
-    report = orch.final_report()
-    _print(report)
 
-    # persist exports locally
-    out_dir = args.out or os.path.join(os.path.dirname(__file__), "..", "out")
-    out_dir = os.path.abspath(out_dir)
+def _write_outputs(orch, out_dir: str, interrupted: bool, t0: float) -> None:
+    """Persist the JSON/txt/HTML artefacts for a finished (or stopped) run."""
+    try:
+        report = orch.final_report()
+        _print(report)
+    except Exception as e:
+        _print(f"! final report failed: {type(e).__name__}: {e}")
+        report = ""
+
     os.makedirs(out_dir, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     json_path = os.path.join(out_dir, f"swarm-report-{stamp}.json")
     txt_path = os.path.join(out_dir, f"swarm-report-{stamp}.txt")
     html_path = os.path.join(out_dir, f"swarm-dashboard-{stamp}.html")
-    exported = orch.export_report()
-    with open(json_path, "w", encoding="utf-8") as fh:
-        json.dump(exported, fh, indent=2, ensure_ascii=False)
-    with open(txt_path, "w", encoding="utf-8") as fh:
-        fh.write(report)
+
+    try:
+        exported = orch.export_report()
+        with open(json_path, "w", encoding="utf-8") as fh:
+            json.dump(exported, fh, indent=2, ensure_ascii=False)
+        with open(txt_path, "w", encoding="utf-8") as fh:
+            fh.write(report)
+    except Exception as e:
+        _print(f"! could not write reports: {type(e).__name__}: {e}")
+
+    html_written = False
     try:
         from .dashboard import write as write_dashboard
         write_dashboard(exported, html_path)
+        html_written = True
     except Exception as e:
         _print(f"! dashboard failed: {e}")
 
     _print(f"\nwall time : {time.time() - t0:.1f}s")
     _print(f"json report: {json_path}")
     _print(f"txt report : {txt_path}")
-    _print(f"dashboard  : {html_path}")
-    return 0
+    _print(f"dashboard  : {html_path if html_written else '(not written)'}")
+    _print(f"checkpoint : {orch.checkpoint_path}")
+    if orch.log.path:
+        _print(f"event log  : {orch.log.path}")
 
 
 # ---------------------------------------------------------------------------
 # arg parsing
 # ---------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
+    from .config import Scale, Settings
+
+    base = Scale()
+    defaults = Settings()
+
     p = argparse.ArgumentParser(
         prog="swarm",
         description="A large multi-agent swarm: sequential 5-agent role squads, "
@@ -200,35 +257,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = p.add_subparsers(dest="cmd")
 
-    # run
+    # run - numeric defaults come from swarm/config.py so there is a single
+    # source of truth (argparse, config and README can never drift apart).
     r = sub.add_parser("run", help="run the swarm")
-    r.add_argument("--squads", type=int, default=12,
-                   help="number of sequential 5-agent squads (default 12)")
-    r.add_argument("--agents-per-squad", type=int, default=5,
-                   help="agents per squad (default 5, per design)")
-    r.add_argument("--curators", type=int, default=15,
-                   help="number of curator AIs that author+vote on prompts (default 15)")
-    r.add_argument("--concurrency", type=int, default=24,
-                   help="max concurrent LLM calls (default 24)")
-    r.add_argument("--llm-timeout", type=int, default=45,
-                   help="per-LLM-call timeout seconds (default 45)")
+    r.add_argument("--squads", type=int, default=None,
+                   help=f"number of sequential 5-agent squads (default {base.squads})")
+    r.add_argument("--agents-per-squad", type=int, default=None,
+                   help=f"agents per squad (default {base.agents_per_squad}, per design)")
+    r.add_argument("--curators", type=int, default=None,
+                   help=f"number of curator AIs that author+vote on prompts (default {base.curators})")
+    r.add_argument("--concurrency", type=int, default=None,
+                   help=f"max concurrent LLM calls (default {base.concurrency})")
+    r.add_argument("--llm-timeout", type=int, default=None,
+                   help=f"per-LLM-call timeout seconds (default {base.llm_timeout})")
     r.add_argument("--goal", type=str, default=None,
                    help="the project goal the swarm builds toward")
     r.add_argument("--offline", action="store_true",
                    help="use deterministic stubs instead of live LLM calls")
     r.add_argument("--no-sandbox", action="store_true",
                    help="skip all Daytona sandbox interaction")
-    r.add_argument("--board-context", type=int, default=40,
-                   help="how many discussion posts each agent sees (default 40)")
-    r.add_argument("--reviews", type=int, default=2,
-                   help="peer reviews per work unit (default 2)")
-    r.add_argument("--discussants", type=int, default=3,
-                   help="agents commenting publicly after each squad (default 3)")
-    r.add_argument("--budget", type=int, default=0,
+    r.add_argument("--board-context", type=int, default=defaults.board_context_limit,
+                   help=f"how many discussion posts each agent sees (default {defaults.board_context_limit})")
+    r.add_argument("--reviews", type=int, default=defaults.peer_reviews_per_work,
+                   help=f"peer reviews per work unit (default {defaults.peer_reviews_per_work})")
+    r.add_argument("--discussants", type=int, default=defaults.discussants,
+                   help=f"agents commenting publicly after each squad (default {defaults.discussants})")
+    r.add_argument("--budget", type=int, default=defaults.max_total_tokens,
                    help="stop cleanly after ~N total tokens (0 = unlimited)")
     r.add_argument("--resume-from", type=str, default=None,
-                   help="path to a previous run's _checkpoint.json to continue")
-    r.add_argument("--run-prefix", type=str, default="run",
+                   help="path to out/_checkpoint.json (or a swarm-report JSON) to continue")
+    r.add_argument("--run-prefix", type=str, default=defaults.run_prefix,
                    help="sandbox workspace folder prefix")
     r.add_argument("--out", type=str, default=None, help="output dir for reports")
     r.add_argument("--quiet", action="store_true", help="suppress live transcript")

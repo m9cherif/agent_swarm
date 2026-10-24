@@ -24,10 +24,10 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
 
-from .config import DAYTONA_API_BASE, DAYTONA_API_KEY, DAYTONA_SANDBOX_ID, DAYTONA_SANDBOX_NAME, DAYTONA_TOOLBOX_BASE, SANDBOX_WORKSPACE
+from .config import DAYTONA_API_KEY, DAYTONA_SANDBOX_ID, DAYTONA_SANDBOX_NAME, DAYTONA_TOOLBOX_BASE, SANDBOX_WORKSPACE
 
 
 @dataclass
@@ -65,6 +65,7 @@ class Sandbox:
         self._exec_url = f"{DAYTONA_TOOLBOX_BASE}/{sandbox_id}/process/execute"
         self._lock = threading.Lock()
         self._bootstrapped = False
+        self.pytest_ready = False
         self.exec_count = 0
         self.history: List[Tuple[str, int]] = []
 
@@ -200,7 +201,7 @@ class Sandbox:
         self.exec(f"mkdir -p {parts}", timeout=60)
 
     def bootstrap(self, force: bool = False) -> bool:
-        """Install the runtimes agent code needs (python3, git, etc.).
+        """Install the runtimes agent code needs (python3, git, pytest).
 
         The base sandbox ships with bash + tar only. This is idempotent and
         memoized so we pay the apt cost at most once per run.
@@ -215,6 +216,7 @@ class Sandbox:
         # Only install if python3 is actually missing.
         check = self.exec("command -v python3 >/dev/null 2>&1 && echo HAVE || echo NEED", timeout=60)
         if "HAVE" in check.output:
+            self.ensure_pytest()
             self._bootstrapped = True
             return True
 
@@ -229,7 +231,39 @@ class Sandbox:
         )
         r = self.exec(cmd, timeout=600)
         self._bootstrapped = "BOOTSTRAP_OK" in r.output
+        if self._bootstrapped:
+            self.ensure_pytest()
         return self._bootstrapped
+
+    def ensure_pytest(self) -> bool:
+        """Make `python3 -m pytest` available so verification can run tests.
+
+        Without this, `verify.py` can only fall back to executing a test file
+        as a script, which defines test cases without running them.
+        """
+        if not self.enabled:
+            return False
+        if self.pytest_ready:
+            return True
+        chk = self.exec(
+            "python3 -m pytest --version >/dev/null 2>&1 && echo YES || echo NO",
+            timeout=60,
+        )
+        if "YES" in chk.output:
+            self.pytest_ready = True
+            return True
+
+        install = (
+            "export DEBIAN_FRONTEND=noninteractive; "
+            "(apt-get install -y python3-pytest >>/root/swarm/apt.log 2>&1 || true); "
+            "python3 -m pytest --version >/dev/null 2>&1 || "
+            "(pip3 install --quiet pytest >>/root/swarm/pip.log 2>&1 || "
+            "python3 -m pip install --quiet pytest >>/root/swarm/pip.log 2>&1 || true); "
+            "python3 -m pytest --version >/dev/null 2>&1 && echo PYES || echo PNO"
+        )
+        r = self.exec(install, timeout=300)
+        self.pytest_ready = "PYES" in r.output
+        return self.pytest_ready
 
     def summary(self) -> Dict:
         return {

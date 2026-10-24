@@ -20,7 +20,7 @@ from __future__ import annotations
 import random
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .config import CURATOR_MODEL_CHAIN, Scale
 from .llm import LLMClient
@@ -36,12 +36,6 @@ class CuratorDraft:
 
 
 @dataclass
-class VoteResult:
-    scores: List[float]                     # score per candidate, by one curator
-    rationale: str = ""
-
-
-@dataclass
 class DispatchPlan:
     prompt: str
     winner_index: int
@@ -49,34 +43,6 @@ class DispatchPlan:
     mean_scores: List[float]
     total_votes: int
     drafts: List[CuratorDraft] = field(default_factory=list)
-
-
-# ---------------------------------------------------------------------------
-# Scoring helpers
-# ---------------------------------------------------------------------------
-def _parse_score(text: str, default: float) -> Tuple[float, str]:
-    """Extract a 0-10 score and an optional rationale from a model reply.
-
-    Accepts forms like '8', 'score: 8', '8/10', '{"score": 8}'.
-    """
-    if not text:
-        return default, ""
-    # JSON-ish
-    m = re.search(r'"?score"?\s*[:=]\s*"?([0-9]+(?:\.[0-9]+)?)', text, re.I)
-    if m:
-        try:
-            return max(0.0, min(10.0, float(m.group(1)))), text.strip()[:300]
-        except ValueError:
-            pass
-    m = re.search(r'\b([0-9]{1,2}(?:\.[0-9]+)?)\s*(?:/10\b|\bpoints?\b)?', text)
-    if m:
-        try:
-            val = float(m.group(1))
-            if val <= 10:
-                return max(0.0, min(10.0, val)), text.strip()[:300]
-        except ValueError:
-            pass
-    return default, text.strip()[:300]
 
 
 class CuratorCouncil:
@@ -97,6 +63,8 @@ class CuratorCouncil:
         self.rng = random.Random(seed)
         self.n = scale.curators
         self.curator_ids = [f"curator-{i+1:02d}" for i in range(self.n)]
+        # real scores cast by the last vote (used for reporting)
+        self.votes_cast = 0
 
     # -- step 1: author -----------------------------------------------------
     def author_prompts(
@@ -181,52 +149,60 @@ class CuratorCouncil:
         return drafts
 
     # -- step 2: vote -------------------------------------------------------
+    # One reply can only hold so many scores reliably; batch candidates into
+    # chunks when a council is unusually large.
+    VOTES_PER_CALL = 40
+
     def vote_on_prompts(
         self,
         drafts: List[CuratorDraft],
         role_name: str,
         squad_index: int,
     ) -> List[float]:
-        """Every curator scores every candidate. Returns aggregate mean scores."""
+        """Every curator scores every candidate. Returns aggregate mean scores.
+
+        The brief is explicit: all curators score ALL candidate prompts
+        (including the ones they did not write). Scoring happens in batches of
+        `VOTES_PER_CALL` so a single reply never has to carry more scores than
+        a model can return reliably - but no candidate is ever skipped, so no
+        candidate gets padded with a neutral 5.0.
+        """
         n = len(drafts)
         if n == 0:
+            self.votes_cast = 0
             return []
-
-        # Budget: if the council is large, have each curator score a random
-        # subset of candidates plus always the top-looking ones, to keep the
-        # call count sane while still getting broad coverage.
-        per_curator = min(n, 8)
 
         # Build the catalogue text shared by all voters.
         catalogue = "\n\n".join(
             f"CANDIDATE {d.index} (by {d.curator_id}):\n{d.prompt}" for d in drafts
         )
 
+        chunk = max(1, self.VOTES_PER_CALL)
         jobs = []
-        voters = self.curator_ids
-        for cid in voters:
-            subset = list(range(n))
-            if n > per_curator:
-                self.rng.shuffle(subset)
-                subset = sorted(subset[:per_curator])
-            chosen = ", ".join(str(i) for i in subset)
-            system = (
-                "You are a prompt-quality judge in a multi-agent swarm. Score each candidate "
-                "instruction prompt from 0 to 10 on: specificity, actionability, completeness, "
-                "and whether it would make a worker produce the required deliverable. "
-                "Reply ONLY as JSON on one line: "
-                '{"scores": {"<candidate_number>": <number>, ...}}'
-            )
-            user = (
-                f"ROLE: {role_name}\n\n"
-                f"CANDIDATES:\n{catalogue}\n\n"
-                f"Score ONLY these candidate numbers: {chosen}\n"
-                "Return the JSON object now."
-            )
-            jobs.append((cid, [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ]))
+        assignments: List[Tuple[str, List[int]]] = []
+        for cid in self.curator_ids:
+            for start in range(0, n, chunk):
+                subset = list(range(start, min(start + chunk, n)))
+                assignments.append((cid, subset))
+                chosen = ", ".join(str(i) for i in subset)
+                system = (
+                    "You are a prompt-quality judge in a multi-agent swarm. Score each "
+                    "candidate instruction prompt from 0 to 10 on: specificity, "
+                    "actionability, completeness, and whether it would make a worker "
+                    "produce the required deliverable. "
+                    "Reply ONLY as JSON on one line: "
+                    '{"scores": {"<candidate_number>": <number>, ...}}'
+                )
+                user = (
+                    f"ROLE: {role_name}\n\n"
+                    f"CANDIDATES:\n{catalogue}\n\n"
+                    f"Score ONLY these candidate numbers: {chosen}\n"
+                    "Return the JSON object now."
+                )
+                jobs.append((f"{cid}#{start}", [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ]))
 
         results = self.llm.map_chat(
             jobs, models=CURATOR_MODEL_CHAIN, max_tokens=500, temperature=0.2
@@ -235,32 +211,38 @@ class CuratorCouncil:
         # Accumulate scores: sums + counts per candidate index.
         sums = [0.0] * n
         counts = [0] * n
-        defaults = [5.0] * n
+        votes_cast = 0
 
-        for cid, res in zip(voters, results):
+        for (cid, subset), res in zip(assignments, results):
             parsed = self._parse_score_map(res.text, n)
             rated = set()
-            for idx, score in parsed.items():
-                if 0 <= idx < n:
-                    sums[idx] += score
-                    counts[idx] += 1
-                    rated.add(idx)
-                    self.metrics.record_prompt_vote(cid, idx, score)
-            # judges that failed to parse: give every candidate a neutral
-            # score so unfloored candidates aren't unfairly promoted.
-            for idx in range(n):
-                if idx not in rated:
+            for idx in subset:
+                score = parsed.get(idx)
+                if score is None:
+                    continue
+                sums[idx] += score
+                counts[idx] += 1
+                rated.add(idx)
+                votes_cast += 1
+                self.metrics.record_prompt_vote(cid, idx, score)
+            if not rated and not parsed:
+                # The judge returned nothing usable at all: pad every candidate
+                # it was asked about with a neutral score so that a silent
+                # judge neither promotes nor buries its batch.
+                for idx in subset:
                     sums[idx] += 5.0
                     counts[idx] += 1
 
-        means = [
-            (sums[i] / counts[i]) if counts[i] else defaults[i] for i in range(n)
-        ]
+        self.votes_cast = votes_cast
+        means = [(sums[i] / counts[i]) if counts[i] else 5.0 for i in range(n)]
         self.metrics.note_phase("curator_vote")
         self.log.emit(
             "vote",
             f"squad {squad_index}: prompt votes tallied",
             squad=squad_index,
+            votes=votes_cast,
+            candidates=n,
+            judges=len(self.curator_ids),
             means=[round(m, 2) for m in means],
         )
         return means
@@ -293,12 +275,13 @@ class CuratorCouncil:
             means = [0.0] * len(drafts)
         # tie-break deterministically but with a little randomness among equals
         best = max(range(len(drafts)), key=lambda i: (means[i], -abs(i - len(drafts) // 2)))
+        votes = self.votes_cast or (len(self.curator_ids) * len(drafts))
         return DispatchPlan(
             prompt=drafts[best].prompt,
             winner_index=best,
             winner_curator=drafts[best].curator_id,
             mean_scores=list(means),
-            total_votes=sum(1 for _ in self.curator_ids) * len(drafts),
+            total_votes=votes,
             drafts=drafts,
         )
 

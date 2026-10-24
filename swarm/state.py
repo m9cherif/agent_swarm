@@ -16,10 +16,10 @@ import json
 import os
 import threading
 import time
-from collections import defaultdict, deque
-from dataclasses import dataclass, field
+from collections import defaultdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 def _now() -> str:
@@ -97,6 +97,25 @@ class DiscussionBoard:
         with self._lock:
             return list(self._posts)
 
+    # -- persistence (checkpoint / resume) --------------------------------
+    def to_dict(self) -> Dict[str, Any]:
+        with self._lock:
+            return {
+                "seq": self._seq,
+                "posts": [asdict(p) for p in self._posts],
+            }
+
+    def load(self, data: Optional[Dict[str, Any]]) -> int:
+        """Restore posts from a checkpoint. Returns how many were loaded."""
+        if not data:
+            return 0
+        posts = [BoardPost(**p) for p in (data.get("posts") or [])]
+        seq = data.get("seq")
+        with self._lock:
+            self._posts = posts
+            self._seq = int(seq) if seq else (posts[-1].seq if posts else 0)
+        return len(posts)
+
 
 # ---------------------------------------------------------------------------
 # Blackboard
@@ -157,6 +176,22 @@ class Blackboard:
         with self._lock:
             return len(self._entries)
 
+    # -- persistence (checkpoint / resume) --------------------------------
+    def to_dict(self) -> Dict[str, Any]:
+        with self._lock:
+            return {
+                "entries": list(self._entries),
+                "artifacts": dict(self._artifacts),
+            }
+
+    def load(self, data: Optional[Dict[str, Any]]) -> int:
+        if not data:
+            return 0
+        with self._lock:
+            self._entries = list(data.get("entries") or [])
+            self._artifacts = dict(data.get("artifacts") or {})
+        return len(self._entries)
+
 
 # ---------------------------------------------------------------------------
 # Event log
@@ -190,6 +225,21 @@ class EventLog:
     def count(self) -> int:
         with self._lock:
             return len(self._events)
+
+    # -- persistence (checkpoint / resume) --------------------------------
+    def to_dict(self, limit: int = 5000) -> Dict[str, Any]:
+        """Serialise recent events. `limit` keeps a long run's checkpoint sane."""
+        with self._lock:
+            events = list(self._events[-limit:])
+        return {"path": self.path or "", "events": events, "total": self.count()}
+
+    def load(self, data: Optional[Dict[str, Any]]) -> int:
+        """Restore events into memory only - the JSONL file already has them."""
+        if not data:
+            return 0
+        with self._lock:
+            self._events = list(data.get("events") or [])
+        return len(self._events)
 
 
 # ---------------------------------------------------------------------------
@@ -300,5 +350,37 @@ class Metrics:
                 "agents_scored": total_agents_scored,
                 "avg_reputation": round(avg_rep, 2),
                 "phase_counts": dict(self.phase_counts),
+                "prompt_votes": len(self.prompt_votes),
                 "llm": dict(self.llm),
             }
+
+    # -- persistence (checkpoint / resume) --------------------------------
+    def to_dict(self) -> Dict[str, Any]:
+        with self._lock:
+            return {
+                "t0": self.t0,
+                "squads": [asdict(s) for s in
+                           sorted(self.squads.values(), key=lambda x: x.squad)],
+                "agent_reputation": dict(self.agent_reputation),
+                "agent_votes": dict(self.agent_votes),
+                "prompt_votes": list(self.prompt_votes),
+                "phase_counts": dict(self.phase_counts),
+                "llm": dict(self.llm),
+            }
+
+    def load(self, data: Optional[Dict[str, Any]]) -> int:
+        if not data:
+            return 0
+        with self._lock:
+            self.t0 = float(data.get("t0") or time.time())
+            self.squads = {
+                s["squad"]: SquadMetrics(**s) for s in (data.get("squads") or [])
+            }
+            self.agent_reputation = defaultdict(
+                float, data.get("agent_reputation") or {}
+            )
+            self.agent_votes = defaultdict(int, data.get("agent_votes") or {})
+            self.prompt_votes = list(data.get("prompt_votes") or [])
+            self.phase_counts = defaultdict(int, data.get("phase_counts") or {})
+            self.llm = dict(data.get("llm") or {})
+        return len(self.squads)

@@ -11,7 +11,6 @@ squads inherit not just artefacts but the collective reasoning about them.
 """
 from __future__ import annotations
 
-import re
 from typing import List
 
 from .config import VOTER_MODEL_CHAIN, Scale

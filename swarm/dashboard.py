@@ -9,7 +9,6 @@ artefacts that landed in the sandbox.
 from __future__ import annotations
 
 import html
-import json
 from typing import Dict, List
 
 
@@ -59,6 +58,25 @@ def render(report: Dict) -> str:
           </div>
           <div class="squad-meta">{d:.1f}s · avg {avg:.2f}</div>
         </div>{vfy}""")
+
+    # --- curator council voting outcome ---
+    council_rows = []
+    for r in reports:
+        scores = r.get("prompt_scores") or []
+        spread = (max(scores) - min(scores)) if len(scores) > 1 else 0.0
+        v = r.get("verification", "")
+        badge = ""
+        if v:
+            ok = v.startswith("ran `") and "passed=True" in v
+            badge = (f'<span class="pill" style="color:var(--good)">{_esc(v)}</span>'
+                     if ok else f'<span class="pill" style="color:var(--mid)">{_esc(v)}</span>')
+        council_rows.append(
+            f'<div class="post"><span class="tag">#{int(r.get("squad",0))+1}</span> '
+            f'<b>{_esc(r.get("winner","-"))}</b> '
+            f'<i class="role">{_esc(r.get("role",""))}</i> '
+            f'won with <b>{r.get("winner_score",0):.2f}</b>/10 '
+            f'({len(scores)} candidates, spread {spread:.2f}) {badge}</div>'
+        )
 
     # --- leaderboard ---
     leader_rows = []
@@ -167,6 +185,8 @@ def render(report: Dict) -> str:
     <div>
       <h2>Squad timeline (sequential roles)</h2>
       {''.join(squad_bars) or '<div class="sub">no squads</div>'}
+      <h2>Curator council: prompt voting outcome</h2>
+      {''.join(council_rows) or '<div class="sub">no votes yet</div>'}
     </div>
     <div>
       <h2>Peer-voted leaderboard</h2>

@@ -17,7 +17,7 @@ import json
 import re
 import shlex
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from .config import WORKER_MODEL_CHAIN, Role, Scale
 from .llm import LLMClient

@@ -1,6 +1,16 @@
 __pycache__/
 *.pyc
 .env
+*.log
+
+# run artefacts: reports, dashboards, checkpoints and event logs
+out/
+out_t*/
+temp_*.txt
+
+# test tooling
+.pytest_cache/
+.coverage
 
 # one-off API/endpoint discovery probes (not part of the project)
 /nv_*.py

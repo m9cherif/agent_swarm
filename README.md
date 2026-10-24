@@ -57,9 +57,9 @@ runs cycle the catalogue so later passes refine earlier work.
 | **Peer voting + leaderboard** | `agents.py`, `state.py` | Agents score each other 0–10; reputation leaderboard |
 | **Blackboard handoff** | `state.py` | Accumulated project state fed to the next squad |
 | **Real sandbox execution** | `sandbox.py` | Files + shell inside Daytona `agent_swarm` as root |
-| **Code verification** | `verify.py` | Runs what agents wrote; broadcasts real pass/fail |
+| **Code verification** | `verify.py` | Runs what agents wrote (tests via pytest/unittest); broadcasts real pass/fail |
 | **Resilient LLM client** | `llm.py` | Model fallback chains, 429 cooldown, dead-model skip, reasoning-aware parsing |
-| **Checkpoint + resume** | `orchestrator.py`, `cli.py` | `_checkpoint.json`; `--resume-from` continues a run |
+| **Checkpoint + resume** | `orchestrator.py`, `cli.py` | `out/_checkpoint.json` saves board + blackboard + metrics + reports; `--resume-from` continues with all of it restored |
 | **Token budget guard** | `orchestrator.py` | `--budget N` stops the run cleanly |
 | **Offline mode** | `llm.py` | Deterministic stubs — full pipeline without spending tokens |
 | **Reports** | `cli.py`, `dashboard.py` | Text + JSON + self-contained **HTML dashboard** |
@@ -106,16 +106,34 @@ python -m swarm run --squads 60 --curators 15
 # with a token ceiling
 python -m swarm run --squads 60 --budget 3000000
 
-# continue an interrupted run
-python -m swarm run --squads 60 --resume-from out/swarm-report-<stamp>.json
-#   (point it at the run's _checkpoint.json, copied locally after a run)
+# continue an interrupted run (writes out/_checkpoint.json after every squad)
+python -m swarm run --squads 60 --resume-from out/_checkpoint.json
+#   an exported report works too: --resume-from out/swarm-report-<stamp>.json
 ```
 
-Reports land in `out/`:
+Everything a run produces lands in `out/` (git-ignored):
 
 * `swarm-report-*.txt` — human-readable final report
 * `swarm-report-*.json` — full machine-readable export
 * `swarm-dashboard-*.html` — open in a browser for the visual dashboard
+* `_checkpoint.json` — resume point: board, blackboard, metrics and squad reports
+* `events-*.jsonl` — append-only audit trail of every dispatch/vote/review/verify event
+
+---
+
+## Tests
+
+```bash
+# offline tests (no network, no tokens)
+python -m unittest discover -s . -p "test_*.py" -v
+
+# also run the live NVIDIA / Daytona tests
+SWARM_LIVE=1 python -m unittest discover -s . -p "test_*.py" -v
+```
+
+`test_vote.py` covers curator scoring and dispatch; `test_verify.py` covers the
+verification decision tree — including the case where a test file only *defines*
+its cases and must therefore **not** be reported as verified.
 
 ---
 
@@ -127,12 +145,21 @@ Reports land in `out/`:
 | `--agents-per-squad` | 5 | Agents per squad (design constant) |
 | `--curators` | 15 | Curator AIs that author + vote on prompts |
 | `--concurrency` | 16 | Max simultaneous LLM calls |
+| `--llm-timeout` | 90 | Per-LLM-call timeout in seconds |
 | `--reviews` | 2 | Peer reviews per work unit |
 | `--discussants` | 3 | Agents commenting in each discussion round |
+| `--board-context` | 40 | Discussion posts each agent sees |
 | `--budget` | 0 | Stop after ~N total tokens (0 = unlimited) |
+| `--resume-from` | — | Continue from `out/_checkpoint.json` or a report JSON |
+| `--run-prefix` | `run` | Sandbox workspace folder prefix |
+| `--out` | `out/` | Where reports, dashboards and the checkpoint are written |
+| `--quiet` | off | Suppress the live transcript |
 | `--offline` | off | Deterministic stubs instead of live LLM |
 | `--no-sandbox` | off | Skip all Daytona interaction |
 | `--goal` | (built-in) | The project the swarm builds |
+
+Numeric defaults come from `swarm/config.py` (`Scale` / `Settings`), so
+`--help`, the config and this table cannot drift apart.
 
 ---
 
@@ -154,7 +181,10 @@ global cooldown on 429s.
 
 Because most NIM endpoints are **reasoning models**, the visible `content` can
 be empty while text lands in `reasoning_content`. `llm.py` extracts from every
-field and budgets `max_tokens` accordingly.
+field and budgets `max_tokens` accordingly. It also sends
+`reasoning_effort: "none"` so reasoning models answer immediately (0 reasoning
+tokens); any model that rejects the parameter is remembered and simply never
+asked again — the call is retried without it instead of failing.
 
 ---
 
